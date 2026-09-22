@@ -22,13 +22,14 @@ from __future__ import annotations
 import uuid
 
 import streamlit as st
+from PIL import Image
 
 import api_client
-from style import PHONE_CSS
+from style import LOGO_PATH, PHONE_CSS, app_header, badge, bottom_nav, settings_trigger
 
 st.set_page_config(
     page_title="CamerTrust — Émulateur",
-    page_icon="📱",
+    page_icon=Image.open(LOGO_PATH),
     layout="wide",
 )
 st.markdown(PHONE_CSS, unsafe_allow_html=True)
@@ -62,13 +63,21 @@ _init_state()
 
 
 # ---------------------------------------------------------------------------
-# Barre latérale — réglages de démo, jamais montrés au jury comme
-# « interface finale », juste des commandes de mise en scène.
+# Réglages de démo — loi de Hick : seuls les 2-3 choix vraiment utiles
+# pendant une démonstration restent visibles d'emblée (l'abonné simulé,
+# l'état de la connexion) ; le reste — réglages techniques, scénario de
+# transaction — est replié dans des panneaux secondaires.
+#
+# Cette fonction est appelée deux fois : depuis la barre latérale (bureau)
+# et depuis le popover ⚙️ affiché sur la page (mobile, barre latérale
+# masquée — voir PHONE_CSS et `settings_trigger`) ; `suffix` distingue les
+# clés des deux jeux de widgets tout en gardant un seul état partagé
+# (`st.session_state`), donc les deux surfaces restent synchronisées.
 # ---------------------------------------------------------------------------
-with st.sidebar:
-    st.header("⚙️ Réglages de démo")
-
-    choix_numero = st.selectbox("Abonné simulé", list(NUMEROS_DEMO.keys()))
+def _render_demo_settings(suffix: str) -> None:
+    choix_numero = st.selectbox(
+        "Abonné simulé", list(NUMEROS_DEMO.keys()), key=f"subscriber_choice_{suffix}",
+    )
     nouveau_numero = NUMEROS_DEMO[choix_numero]
     if nouveau_numero != st.session_state["phone_number"]:
         st.session_state["phone_number"] = nouveau_numero
@@ -77,39 +86,35 @@ with st.sidebar:
         st.session_state["session_active"] = False
         st.session_state["current_screen"] = "Composez *888# pour démarrer une session."
 
-    st.text_input("Numéro affiché", value=st.session_state["phone_number"], disabled=True)
-
-    st.divider()
-    api_url_input = st.text_input("URL de l'API (E2)", value=st.session_state["api_url"])
-    if api_url_input != st.session_state["api_url"]:
-        st.session_state["api_url"] = api_url_input
-
-    col_a, col_b = st.columns(2)
-    with col_a:
-        if st.button("🔄 Vérifier la connexion"):
-            api_client.check_health()
-    with col_b:
-        if st.button("⏰ Réveiller le service"):
-            with st.spinner("Ping /health (jusqu'à 10 min si l'instance dormait)…"):
-                api_client.check_health()
-
-    online = api_client.is_online()
-    pill_class = "status-pill-online" if online else "status-pill-offline"
-    pill_text = "API en ligne" if online else "Mode démo hors ligne (Plan B)"
-    st.markdown(f'<span class="{pill_class}">{pill_text}</span>', unsafe_allow_html=True)
-    if not online:
+    st.caption(st.session_state["phone_number"])
+    if not api_client.is_online():
         st.caption(
             "Aucune réponse de l'API — l'émulateur rejoue un scénario local "
             "réaliste (`demo_backend.py`) pour que la démo reste jouable."
         )
 
-    st.divider()
+    with st.expander("🔧 Réglages avancés"):
+        api_url_input = st.text_input(
+            "URL de l'API (E2)", value=st.session_state["api_url"], key=f"api_url_input_{suffix}",
+        )
+        if api_url_input != st.session_state["api_url"]:
+            st.session_state["api_url"] = api_url_input
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if st.button("🔄 Vérifier", width='stretch', key=f"check_health_{suffix}"):
+                api_client.check_health()
+        with col_b:
+            if st.button("⏰ Réveiller", width='stretch', key=f"wake_{suffix}"):
+                with st.spinner("Ping /health (jusqu'à 10 min si l'instance dormait)…"):
+                    api_client.check_health()
+
     with st.expander("💡 Simuler une transaction suspecte"):
         st.caption("Injecte une transaction pour déclencher une alerte, comme le ferait un vrai flux transactionnel côté opérateur.")
-        montant = st.number_input("Montant (FCFA)", min_value=1000, value=450_000, step=10_000)
-        heure = st.slider("Heure de la transaction", 0, 23, 2)
-        type_op = st.selectbox("Type d'opération", ["retrait", "transfert"])
-        if st.button("Envoyer la transaction"):
+        montant = st.number_input("Montant (FCFA)", min_value=1000, value=450_000, step=10_000, key=f"montant_{suffix}")
+        heure = st.slider("Heure de la transaction", 0, 23, 2, key=f"heure_{suffix}")
+        type_op = st.selectbox("Type d'opération", ["retrait", "transfert"], key=f"type_op_{suffix}")
+        if st.button("Envoyer la transaction", width='stretch', key=f"send_tx_{suffix}"):
             res = api_client.score_transaction(
                 user_id="C123", amount=int(montant), type_op=type_op, hour=int(heure),
             )
@@ -120,77 +125,124 @@ with st.sidebar:
 
 
 # ---------------------------------------------------------------------------
+# Barre latérale — bureau uniquement. Sur mobile, Streamlit la range dans
+# un panneau qu'il faut ouvrir puis faire défiler pour l'atteindre : on la
+# masque entièrement (voir PHONE_CSS) et on la remplace par la barre de 3
+# icônes en bas de l'écran (`bottom_nav`) plus l'icône ⚙️ sur la page pour
+# ces mêmes réglages (`settings_trigger`) — rien n'est perdu, juste rendu
+# accessible sans détour par un panneau caché.
+# ---------------------------------------------------------------------------
+with st.sidebar:
+    st.header("⚙️ Réglages de démo")
+    _render_demo_settings("sb")
+
+
+# ---------------------------------------------------------------------------
 # Mise en page : terminal USSD à gauche, boîte SMS à droite.
 # ---------------------------------------------------------------------------
-st.title("📱 CamerTrust — Terminal abonné")
+st.markdown(app_header("Terminal abonné"), unsafe_allow_html=True)
+
+# Visibilité de l'état du système (Nielsen) : affichée directement sur la
+# page plutôt que seulement dans la barre latérale, pour rester visible
+# même sur mobile où celle-ci est masquée.
+online = api_client.is_online()
+st.markdown(
+    badge("🟢 API en ligne" if online else "🔴 Mode démo hors ligne (Plan B)", "success" if online else "danger"),
+    unsafe_allow_html=True,
+)
 st.caption("Vue exacte de ce que verrait un abonné sur un téléphone à touches : USSD *888# et SMS.")
+
+# Icône ⚙️ : sur mobile seulement (voir PHONE_CSS), reprend ici les mêmes
+# réglages que la barre latérale de bureau.
+settings_trigger(lambda: _render_demo_settings("m"))
 
 col_ussd, col_sms = st.columns([1, 1.2], gap="large")
 
 # --- Colonne terminal USSD -------------------------------------------------
 with col_ussd:
-    st.subheader("Menu USSD — *888#")
+    # Tout l'écran de dialogue (titre, écran simulé, clavier, actions) est
+    # regroupé dans un même conteneur resserré : l'espacement vertical par
+    # défaut de Streamlit entre chaque élément (~1rem) s'additionne vite sur
+    # 6-7 blocs empilés et allonge le défilement pour rien — on le réduit
+    # ici globalement plutôt que bloc par bloc.
+    with st.container(key="ussd_panel"):
+        st.subheader("Menu USSD — *888#")
 
-    screen_html = (
-        f'<div class="phone-frame"><div class="phone-notch"></div>'
-        f'<div class="phone-screen">{st.session_state["current_screen"]}<span class="cursor">&nbsp;</span></div>'
-        f'<div class="phone-label">CamerTrust · terminal simulé</div></div>'
-    )
-    st.markdown(screen_html, unsafe_allow_html=True)
+        screen_html = (
+            f'<div class="phone-frame"><div class="phone-notch"></div>'
+            f'<div class="phone-screen">{st.session_state["current_screen"]}<span class="cursor">&nbsp;</span></div>'
+            f'<div class="phone-label">CamerTrust · terminal simulé</div></div>'
+        )
+        st.markdown(screen_html, unsafe_allow_html=True)
 
-    if not st.session_state["session_active"]:
-        if st.button("☎️ Composer *888#", width='stretch', type="primary"):
-            st.session_state["session_id"] = str(uuid.uuid4())
-            st.session_state["accumulated"] = []
-            reponse = api_client.ussd_request(
-                st.session_state["session_id"], st.session_state["phone_number"], "",
-            )
-            st.session_state["current_screen"] = reponse[4:].strip() if reponse[:3] in ("CON", "END") else reponse
-            st.session_state["session_active"] = reponse.startswith("CON")
-            st.rerun()
-    else:
-        st.markdown("**Clavier**")
-        buffer = st.session_state["keypad_buffer"]
-        st.text_input("Saisie en cours", value=buffer, disabled=True, label_visibility="collapsed")
-
-        pad_rows = [["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], ["*", "0", "#"]]
-        for row in pad_rows:
-            cols = st.columns(3)
-            for c, digit in zip(cols, row):
-                if c.button(digit, key=f"pad_{digit}", width='stretch'):
-                    st.session_state["keypad_buffer"] += digit
-                    st.rerun()
-
-        col_send, col_clear, col_end = st.columns(3)
-        with col_send:
-            if st.button("✅ Envoyer", type="primary", width='stretch', disabled=not buffer):
-                st.session_state["accumulated"].append(buffer)
-                st.session_state["keypad_buffer"] = ""
-                texte = "*".join(st.session_state["accumulated"])
+        if not st.session_state["session_active"]:
+            if st.button("☎️ Composer *888#", width='stretch', type="primary"):
+                st.session_state["session_id"] = str(uuid.uuid4())
+                st.session_state["accumulated"] = []
                 reponse = api_client.ussd_request(
-                    st.session_state["session_id"], st.session_state["phone_number"], texte,
+                    st.session_state["session_id"], st.session_state["phone_number"], "",
                 )
                 st.session_state["current_screen"] = reponse[4:].strip() if reponse[:3] in ("CON", "END") else reponse
                 st.session_state["session_active"] = reponse.startswith("CON")
                 st.rerun()
-        with col_clear:
-            if st.button("⌫ Effacer", width='stretch', disabled=not buffer):
-                st.session_state["keypad_buffer"] = buffer[:-1]
-                st.rerun()
-        with col_end:
-            if st.button("🔴 Terminer", width='stretch'):
-                st.session_state["session_active"] = False
-                st.session_state["current_screen"] = "Session terminee."
-                st.session_state["keypad_buffer"] = ""
-                st.rerun()
+        else:
+            # Le clavier (et lui seul) occupe l'espace disponible tant que
+            # la session est active ; dès que l'abonné envoie une dernière
+            # saisie ou termine, ce bloc entier disparaît au prochain rerun
+            # et seul l'écran (avec la nouvelle réponse, ou le message de
+            # fin) reste affiché — pas d'empilement d'anciens écrans.
+            buffer = st.session_state["keypad_buffer"]
+            # Pastille de saisie compacte à la place d'un st.text_input
+            # complet (label + marges natives ≈ 70px) : l'essentiel — voir
+            # ce qu'on a tapé avant d'envoyer — tient en une seule ligne
+            # fine, pour que le clavier occupe l'espace disponible sans
+            # exiger un long défilement de l'écran.
+            st.markdown(
+                f'<div class="ussd-buffer">{buffer}<span class="cursor">&nbsp;</span></div>',
+                unsafe_allow_html=True,
+            )
 
-    with st.expander("Historique brut de la session (débogage)"):
-        st.code(
-            f"sessionId = {st.session_state['session_id']}\n"
-            f"phoneNumber = {st.session_state['phone_number']}\n"
-            f"text = {'*'.join(st.session_state['accumulated'])!r}",
-            language="text",
-        )
+            st.markdown('<div class="keypad-caption">Pavé numérique</div>', unsafe_allow_html=True)
+            with st.container(key="ussd_keypad"):
+                pad_rows = [["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], ["*", "0", "#"]]
+                for row in pad_rows:
+                    cols = st.columns(3, gap="small")
+                    for c, digit in zip(cols, row):
+                        if c.button(digit, key=f"pad_{digit}", width='stretch'):
+                            st.session_state["keypad_buffer"] += digit
+                            st.rerun()
+
+            action_row = st.container(key="ussd_actions")
+            col_send, col_clear, col_end = action_row.columns(3)
+            with col_send:
+                if st.button("✅ Envoyer", type="primary", width='stretch', disabled=not buffer):
+                    st.session_state["accumulated"].append(buffer)
+                    st.session_state["keypad_buffer"] = ""
+                    texte = "*".join(st.session_state["accumulated"])
+                    reponse = api_client.ussd_request(
+                        st.session_state["session_id"], st.session_state["phone_number"], texte,
+                    )
+                    st.session_state["current_screen"] = reponse[4:].strip() if reponse[:3] in ("CON", "END") else reponse
+                    st.session_state["session_active"] = reponse.startswith("CON")
+                    st.rerun()
+            with col_clear:
+                if st.button("⌫ Effacer", width='stretch', disabled=not buffer):
+                    st.session_state["keypad_buffer"] = buffer[:-1]
+                    st.rerun()
+            with col_end:
+                if st.button("🔴 Terminer", width='stretch'):
+                    st.session_state["session_active"] = False
+                    st.session_state["current_screen"] = "Session terminee."
+                    st.session_state["keypad_buffer"] = ""
+                    st.rerun()
+
+        with st.expander("Historique brut de la session (débogage)"):
+            st.code(
+                f"sessionId = {st.session_state['session_id']}\n"
+                f"phoneNumber = {st.session_state['phone_number']}\n"
+                f"text = {'*'.join(st.session_state['accumulated'])!r}",
+                language="text",
+            )
 
 # --- Colonne SMS ------------------------------------------------------------
 with col_sms:
@@ -199,35 +251,49 @@ with col_sms:
         st.rerun()
 
     messages = api_client.get_outbox(st.session_state["phone_number"])
-    if not messages:
-        st.info("Aucun SMS pour cet abonné pour l'instant.")
 
-    for m in messages:
-        st.markdown(
-            f'<div class="sms-bubble-in">CamerTrust : {m["body"]}</div>'
-            f'<div class="sms-meta">{m.get("horodatage", "")}</div>',
-            unsafe_allow_html=True,
-        )
-        alert_id = m.get("alert_id")
-        if alert_id:
-            alerts = api_client.get_alerts("C123")  # démo mono-compte ; voir README pour la généralisation multi-comptes
-            alerte = next((a for a in alerts if a["alert_id"] == alert_id), None)
-            if alerte and alerte.get("statut") == "en_attente":
-                c1, c2 = st.columns(2)
-                with c1:
-                    if st.button("1️⃣ C'est moi", key=f"ok_{m['id']}", width='stretch'):
-                        api_client.respond_alert(alert_id, 1)
-                        st.rerun()
-                with c2:
-                    if st.button("2️⃣ Ce n'est pas moi", key=f"ko_{m['id']}", width='stretch', type="primary"):
-                        api_client.respond_alert(alert_id, 2)
-                        st.rerun()
-            elif alerte:
-                statut_lisible = {"confirmee": "✅ Confirmée par l'abonné", "bloquee": "🔒 Compte protégé — transferts suspendus"}
-                st.caption(statut_lisible.get(alerte["statut"], alerte["statut"]))
+    with st.container(border=True):
+        if not messages:
+            st.info("Aucun SMS pour cet abonné pour l'instant.")
+
+        for m in messages:
+            st.markdown(
+                f'<div class="sms-bubble-in">CamerTrust : {m["body"]}</div>'
+                f'<div class="sms-meta">{m.get("horodatage", "")}</div>',
+                unsafe_allow_html=True,
+            )
+            alert_id = m.get("alert_id")
+            if alert_id:
+                alerts = api_client.get_alerts("C123")  # démo mono-compte ; voir README pour la généralisation multi-comptes
+                alerte = next((a for a in alerts if a["alert_id"] == alert_id), None)
+                if alerte and alerte.get("statut") == "en_attente":
+                    # Loi de Fitts : les deux réponses possibles sont
+                    # grandes, pleine largeur de leur colonne et côte à
+                    # côte — la cible à atteindre est large et la distance
+                    # entre les deux choix est minimale, pour une réponse
+                    # aussi rapide que possible face à une alerte.
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.button("1️⃣ C'est moi", key=f"conf_{m['id']}", width='stretch'):
+                            api_client.respond_alert(alert_id, 1)
+                            st.rerun()
+                    with c2:
+                        if st.button("2️⃣ Ce n'est pas moi", key=f"disp_{m['id']}", width='stretch', type="primary"):
+                            api_client.respond_alert(alert_id, 2)
+                            st.rerun()
+                elif alerte:
+                    statut_badge = {
+                        "confirmee": badge("✅ Confirmée par l'abonné", "success"),
+                        "bloquee": badge("🔒 Compte protégé — transferts suspendus", "danger"),
+                    }
+                    st.markdown(statut_badge.get(alerte["statut"], badge(alerte["statut"])), unsafe_allow_html=True)
 
 st.divider()
 st.caption(
     "CamerTrust protège votre argent, pas vos habitudes. — "
     "Émulateur de terminal, projet de fin d'études SUP'PTIC 2023-2026."
 )
+
+# Barre de 3 icônes — mobile uniquement (voir PHONE_CSS) ; remplace la
+# navigation par barre latérale masquée sur ce format d'écran.
+bottom_nav(active="app")
